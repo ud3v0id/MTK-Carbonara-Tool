@@ -73,7 +73,8 @@ def _parse_param_tokens(tokens):
     buf = bytearray()
     for t in tokens:
         if t.startswith("@"):
-            buf.extend(open(t[1:], "rb").read())
+            with open(t[1:], "rb") as f:
+                buf.extend(f.read())
             continue
         tok = t.lower()
         # Raw hex string of even length
@@ -192,33 +193,6 @@ class MtkDevice:
         self.write_len_override: Optional[int] = None
         self.read_len_override: Optional[int] = None
         self.ser: Optional[serial.Serial] = None
-        # Minimal opcode specification to drive validation/behavior
-        self.dacmd_spec = {
-            # Streaming download/upload handlers where generic dacmd cannot stream.
-            0x010001: {"needs_stream": True, "note": "64B header -> 8B len -> data stream"},
-            0x010002: {"needs_stream": True, "note": "64B header -> 16B params -> data stream (RX)"},
-            0x010004: {"needs_stream": True, "note": "56B header -> data stream"},
-            0x010005: {"needs_stream": True, "note": "56B header -> data stream (RX)"},
-            0x010008: {"needs_stream": True, "note": "BOOT_TO with payload"},
-            0x01000C: {"needs_stream": True, "note": "Read OTP stream"},
-            0x01000D: {"needs_stream": True, "note": "Write OTP stream"},
-            0x01000E: {"needs_stream": True, "note": "Write efuse large blob"},
-            0x01000F: {"needs_stream": True, "note": "Read efuse large blob"},
-            # Parameter length / status behavior hints.
-            0x010003: {"param_len": 56, "final_status": True},
-            0x010006: {"param_len": 64, "final_status": True},
-            0x010007: {"param_len": 24, "no_final_status": True},
-            0x010009: {"device_ctrl": True},
-            0x01000B: {"param_len": 4, "final_status": False},
-            0x02000B: {"param_len": 4},
-            0x02000E: {"param_len": 4},
-            0x020011: {"param_len": 56},
-            0x080003: {"param_len": 4},
-            0x080005: {"param_len": 56},
-            0x000000D1: {"param_len": 8},
-            0x0E0003: {"param_len": 8},  # Read register: returns data payload then final status
-        }
-
         # Protocol hints derived from DA2 reverse engineering; used by run_dacmd to
         # align TX/RX sequences and refuse unsupported streaming commands.
         self.dacmd_spec = {
@@ -513,7 +487,9 @@ class MtkDevice:
             header = _parse_param_tokens(hex_tokens)
             if len(header) != 64:
                 raise RuntimeError("Download header must be exactly 64 bytes")
-            data = open(data_files[0], "rb").read()
+            data = None
+            with open(data_files[0], "rb") as f:
+                data = f.read()
             data_len = len(data)
             tag = "CMD_DOWNLOAD"
             self.xsend(struct.pack("<I", opcode), tag=tag)
@@ -533,7 +509,9 @@ class MtkDevice:
             hex_tokens, data_files, _ = _split_stream_tokens(raw_tokens)
             if not data_files:
                 raise RuntimeError("BootTo requires a payload file (@path)")
-            data = open(data_files[0], "rb").read()
+            data = None
+            with open(data_files[0], "rb") as f:
+                data = f.read()
             data_len = len(data)
             params = _parse_param_tokens(hex_tokens)
             if len(params) != 8:
@@ -553,7 +531,9 @@ class MtkDevice:
             hex_tokens, data_files, _ = _split_stream_tokens(raw_tokens)
             if not data_files:
                 raise RuntimeError("Write OTP requires a data file (@path)")
-            data = open(data_files[0], "rb").read()
+            data = None
+            with open(data_files[0], "rb") as f:
+                data = f.read()
             params = _parse_param_tokens(hex_tokens)
             if len(params) < 4:
                 raise RuntimeError("Write OTP requires offset (4B)")
@@ -596,7 +576,8 @@ class MtkDevice:
             st = self._status_to_int(self.xstatus(tag=tag, timeout=5.0))
             data = b"".join(chunks)
             if out_file:
-                open(out_file, "wb").write(data)
+                with open(out_file, "wb") as f:
+                    f.write(data)
             return st, [data]
 
         if opcode == 0x010002:  # Upload (device -> host stream)
@@ -621,7 +602,8 @@ class MtkDevice:
             data = recv_stream(data_len, tag)
             st = self._status_to_int(self.xstatus(tag=tag, timeout=5.0))
             if out_file:
-                open(out_file, "wb").write(data)
+                with open(out_file, "wb") as f:
+                    f.write(data)
             return st, [data]
 
         if opcode == 0x010004:  # Write data block
@@ -631,7 +613,9 @@ class MtkDevice:
             params = _parse_param_tokens(hex_tokens)
             if len(params) != 56:
                 raise RuntimeError("Write data params must be 56 bytes")
-            data = open(data_files[0], "rb").read()
+            data = None
+            with open(data_files[0], "rb") as f:
+                data = f.read()
             data_len = len(data)
             params = bytearray(params)
             params[16:24] = struct.pack("<Q", data_len)
@@ -663,17 +647,21 @@ class MtkDevice:
             data = recv_stream(data_len, tag)
             st = self._status_to_int(self.xstatus(tag=tag, timeout=5.0))
             if out_file:
-                open(out_file, "wb").write(data)
+                with open(out_file, "wb") as f:
+                    f.write(data)
             return st, [data]
 
         if opcode == 0x01000E:  # Write eFuse
             hex_tokens, data_files, _ = _split_stream_tokens(raw_tokens)
             if not data_files:
                 raise RuntimeError("Write eFuse requires a data file (@path)")
-            efuse_blob = open(data_files[0], "rb").read()
+            efuse_blob = None
+            with open(data_files[0], "rb") as f:
+                efuse_blob = f.read()
             extra_tail = b""
             if len(data_files) > 1:
-                extra_tail = open(data_files[1], "rb").read()
+                with open(data_files[1], "rb") as f:
+                    extra_tail = f.read()
             # Allow single file containing both segments
             if len(efuse_blob) >= 17108 + 248 and not extra_tail:
                 extra_tail = efuse_blob[17108:17108 + 248]
@@ -712,7 +700,8 @@ class MtkDevice:
             self.write(struct.pack("<I", 0), verbose=False, tag=tag)
             st = self._status_to_int(self.xstatus(tag=tag, timeout=5.0))
             if out_file:
-                open(out_file, "wb").write(data)
+                with open(out_file, "wb") as f:
+                    f.write(data)
             return st, [data]
 
         raise RuntimeError(f"Streaming for opcode 0x{opcode:06X} not implemented; use dedicated flow.")
@@ -992,7 +981,8 @@ def _validate_dacmd_params(opcode: int, params: Optional[bytes], raw_tokens, spe
         header = _parse_param_tokens(hex_tokens)
         if len(header) != 64:
             raise ValueError("Download header must be exactly 64 bytes")
-        open(data_files[0], "rb").close()
+        with open(data_files[0], "rb") as f:
+            pass # Check if file exists and is readable
         return
 
     if opcode == 0x010008:  # BootTo
@@ -1002,7 +992,8 @@ def _validate_dacmd_params(opcode: int, params: Optional[bytes], raw_tokens, spe
         params_buf = _parse_param_tokens(hex_tokens)
         if len(params_buf) != 8:
             raise ValueError("BootTo requires 8-byte address params")
-        open(data_files[0], "rb").close()
+        with open(data_files[0], "rb") as f:
+            pass # Check if file exists and is readable
         return
 
     if opcode == 0x01000D:  # Write OTP
@@ -1012,7 +1003,8 @@ def _validate_dacmd_params(opcode: int, params: Optional[bytes], raw_tokens, spe
         params_buf = _parse_param_tokens(hex_tokens)
         if len(params_buf) < 4:
             raise ValueError("Write OTP requires offset (4B)")
-        open(data_files[0], "rb").close()
+        with open(data_files[0], "rb") as f:
+            pass # Check if file exists and is readable
         return
 
     if opcode == 0x01000C:  # Read OTP
@@ -1036,7 +1028,8 @@ def _validate_dacmd_params(opcode: int, params: Optional[bytes], raw_tokens, spe
         params_buf = _parse_param_tokens(hex_tokens)
         if len(params_buf) != 56:
             raise ValueError("Write data params must be 56 bytes")
-        open(data_files[0], "rb").close()
+        with open(data_files[0], "rb") as f:
+            pass # Check if file exists and is readable
         return
 
     if opcode == 0x010005:  # Read data
@@ -1050,10 +1043,13 @@ def _validate_dacmd_params(opcode: int, params: Optional[bytes], raw_tokens, spe
         _, data_files, _ = _split_stream_tokens(raw_tokens)
         if not data_files:
             raise ValueError("Write eFuse requires a data file (@path)")
-        efuse_blob = open(data_files[0], "rb").read()
+        efuse_blob = None
+        with open(data_files[0], "rb") as f:
+            efuse_blob = f.read()
         extra_tail = b""
         if len(data_files) > 1:
-            extra_tail = open(data_files[1], "rb").read()
+            with open(data_files[1], "rb") as f:
+                extra_tail = f.read()
         if len(efuse_blob) >= 17108 + 248 and not extra_tail:
             extra_tail = efuse_blob[17108:17108 + 248]
             efuse_blob = efuse_blob[:17108]
